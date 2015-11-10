@@ -36,7 +36,7 @@ def lambda_handler(event, context):
                 datetime.datetime.now().strftime("%Y%m%d-%H%M%S") )
 
             # create snapshot
-            if v.create_snapshot(description):
+            if v.create_snapshot(Description=description):
                 print("\t\tSnapshot created with description [%s]" % description)
 
             # find and delete snapshots older than retention_days
