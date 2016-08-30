@@ -1,56 +1,63 @@
-#/usr/bin/python
-
-#
-# AWS auto snapshot script - 2013-08-17
-# https://github.com/viyh/aws-scripts
-#
-# cron script to snapshot all EC2 volumes and delete snapshots older than retention time
-#
-
-import boto
-import datetime
-
-# number of days to retain snapshots for
-retention_days = 2
-
-# AWS access/secret keys
-aws_access = None
-aws_secret = None
+#!/usr/bin/python
 
 ######
+#
+# AWS auto snapshot script - 2016-03-31
+# https://github.com/viyh/aws-scripts
+#
+# Snapshot all EC2 volumes and delete snapshots older than retention time
+#
+# Required IAM permissions:
+#   ec2:DescribeInstances
+#   ec2:DescribeVolumes
+#   ec2:CreateSnapshot
+#   ec2:DeleteSnapshot
+#   ec2:DescribeSnapshots
+#   ec2:CreateTags
+#
 
-print("AWS snapshot backups stated at %s...\n" % datetime.datetime.now())
+import boto3
+import datetime
+from datetime import tzinfo, timedelta, datetime
 
-ec2 = boto.connect_ec2(aws_access_key_id=aws_access, aws_secret_access_key=aws_secret)
+# number of days to retain snapshots for
+retention_days = 7
 
-reservations = ec2.get_all_instances(filters={'instance-state-name': 'running'})
+# create snapshot for volume
+def create_volume_snapshot(instance_name, volume):
+    description = 'autosnap-%s.%s-%s' % ( instance_name, volume.volume_id,
+        datetime.now().strftime("%Y%m%d-%H%M%S") )
+    snapshot = volume.create_snapshot(Description=description)
+    if snapshot:
+        snapshot.create_tags(Tags=[{'Key': 'Name', 'Value': description}])
+        print("\t\tSnapshot created with description [%s]" % description)
 
-# look through each instance for EBS volumes
-for i in [i for r in reservations for i in r.instances]:
+# find and delete snapshots older than retention_days
+def prune_volume_snapshots(retention_days, volume):
+    for s in volume.snapshots.all():
+        now = datetime.now(s.start_time.tzinfo)
+        old_snapshot = ( now - s.start_time ) > timedelta(days=retention_days)
+        if not old_snapshot or not s.description.startswith('autosnap-'): continue
+        print("\t\tDeleting snapshot [%s - %s] created [%s]" % ( s.snapshot_id, s.description, str( s.start_time )))
+        s.delete()
 
-    print("%s - %s" % (i.tags.get('Name'), i.id))
+def snapshot_volumes(instance_name, retention_days, volumes):
+    for v in volumes:
+        print("\t%s" % v.volume_id)
+        create_volume_snapshot(instance_name, v)
+        prune_volume_snapshots(retention_days, v)
 
-    # loop through volumes and create snapshots
-    for v in ec2.get_all_volumes(filters={'attachment.instance-id': i.id}):
-        print("\t%s" % v.id)
-        description = 'autosnap-%s.%s-%s' % ( i.tags.get('Name'), v.id, datetime.datetime.now().strftime("%Y%m%d-%H%M%S") )
+#####
+#####
+#####
 
-        # create snapshot
-        if v.create_snapshot(description):
-            print("\t\tSnapshot created with description [%s]" % description)
+print("AWS snapshot backups stated at %s...\n" % datetime.now())
 
-        # find and delete snapshots older than retention_days
-        for s in v.snapshots():
-            print("\t\tsnapshot found: [%s - %s] created [%s]" % ( s.id, s.description, str( boto.utils.parse_ts(s.start_time) ) ))
-            if not s.description.startswith('autosnap-') or ( datetime.datetime.now() - boto.utils.parse_ts(s.start_time) ) <= datetime.timedelta(days=retention_days):
-                continue
-
-            print("\t\tDeleting snapshot [%s - %s]" % ( s.id, s.description ))
-            try:
-                s.delete()
-                print("yep.")
-            except EC2ResponseError as e:
-                print("%s" % str(e))
-
-print("\n\nAWS snapshot backups completed at %s\n" % datetime.datetime.now())
-
+ec2 = boto3.resource('ec2')
+instances = ec2.instances.filter(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
+for i in instances:
+    instance_name = filter(lambda tag: tag['Key'] == 'Name', i.tags)[0]['Value']
+    print("%s - %s" % (instance_name, i.id))
+    volumes = ec2.volumes.filter(Filters=[{'Name': 'attachment.instance-id', 'Values': [i.id]}])
+    snapshot_volumes(instance_name, retention_days, volumes)
+print("\n\nAWS snapshot backups completed at %s\n" % datetime.now())
